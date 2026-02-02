@@ -6,7 +6,7 @@ import threading
 from datetime import datetime
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = 'ВАШ_ТОКЕН_ЗДЕСЬ'
+BOT_TOKEN = '8347213081:AAGgKksaPwxRy7jtmW2ZK3iSQdP9uxIA0C0'
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ================= БАЗА ДАННЫХ =================
