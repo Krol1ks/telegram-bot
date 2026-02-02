@@ -1,4 +1,3 @@
-import os
 import telebot
 from telebot import types
 import sqlite3
@@ -6,11 +5,18 @@ import requests
 import time
 import threading
 from datetime import datetime
+import os
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN не установлен в переменных окружения")
+# Вставь сюда свой токен прямо в кавычки, если не используешь переменные окружения
+BOT_TOKEN = 'ВАШ_ТОКЕН_ЗДЕСЬ'
+
+# Если токена нет в коде, пробуем взять из системы (для продвинутых)
+if BOT_TOKEN == 'ВАШ_ТОКЕН_ЗДЕСЬ':
+    env_token = os.getenv('BOT_TOKEN')
+    if env_token:
+        BOT_TOKEN = env_token
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ================= БАЗА ДАННЫХ =================
@@ -37,29 +43,58 @@ def init_db():
             )''')
 
 # ================= API COINGECKO =================
+
+# Словарь для точного определения популярных монет
+# Это решает проблему с XRP (ripple), TON (the-open-network) и другими
+MANUAL_MAPPING = {
+    'xrp': 'ripple',
+    'btc': 'bitcoin',
+    'eth': 'ethereum',
+    'ton': 'the-open-network',
+    'sol': 'solana',
+    'bnb': 'binancecoin',
+    'doge': 'dogecoin',
+    'ada': 'cardano',
+    'trx': 'tron',
+    'ltc': 'litecoin',
+    'dot': 'polkadot',
+    'avax': 'avalanche-2',
+    'matic': 'matic-network',
+    'shib': 'shiba-inu',
+    'usdt': 'tether'
+}
+
 def resolve_coins(text):
-    """Превращает 'btc, eth' в список ID и цен"""
+    """Превращает 'btc, xrp' в список ID и цен"""
     found_coins = []
-    # Разбиваем текст по запятым
+    # Разбиваем текст по запятым и убираем пробелы
     symbols = [s.strip().lower() for s in text.split(',')]
     
     for sym in symbols:
-        # 1. Сначала пробуем найти точный ID или Символ через поиск
-        try:
-            search_url = f"https://api.coingecko.com/api/v3/search?query={sym}"
-            search_res = requests.get(search_url, timeout=5).json()
-            
-            api_id = None
-            symbol = sym.upper()
-            
-            if search_res.get('coins'):
-                # Берем первый результат поиска (самый релевантный)
-                top_result = search_res['coins'][0]
-                api_id = top_result['id']
-                symbol = top_result['symbol']
-            
-            if api_id:
-                # 2. Получаем цену для найденного ID
+        api_id = None
+        symbol = sym.upper()
+
+        # 1. Сначала проверяем наш ручной список (самый надежный способ)
+        if sym in MANUAL_MAPPING:
+            api_id = MANUAL_MAPPING[sym]
+        
+        # 2. Если в списке нет, ищем через поиск API
+        if not api_id:
+            try:
+                search_url = f"https://api.coingecko.com/api/v3/search?query={sym}"
+                search_res = requests.get(search_url, timeout=5).json()
+                
+                if search_res.get('coins'):
+                    # Берем первый результат
+                    top_result = search_res['coins'][0]
+                    api_id = top_result['id']
+                    symbol = top_result['symbol']
+            except Exception as e:
+                print(f"Ошибка поиска {sym}: {e}")
+
+        # 3. Если ID найден (в словаре или поиске), узнаем цену
+        if api_id:
+            try:
                 price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={api_id}&vs_currencies=usd"
                 price_res = requests.get(price_url, timeout=5).json()
                 
@@ -69,18 +104,23 @@ def resolve_coins(text):
                         'symbol': symbol.upper(),
                         'price': price_res[api_id]['usd']
                     })
-        except Exception as e:
-            print(f"Ошибка поиска {sym}: {e}")
+            except Exception as e:
+                print(f"Ошибка получения цены для {api_id}: {e}")
             
     return found_coins
 
 def get_prices_batch(coin_ids):
     """Получает цены для списка ID одним запросом"""
+    if not coin_ids:
+        return {}
     try:
-        ids_str = ",".join(coin_ids)
+        # Убираем дубликаты ID для запроса
+        unique_ids = list(set(coin_ids))
+        ids_str = ",".join(unique_ids)
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids_str}&vs_currencies=usd"
         return requests.get(url, timeout=10).json()
-    except:
+    except Exception as e:
+        print(f"Ошибка batch update: {e}")
         return {}
 
 # ================= КЛАВИАТУРЫ =================
@@ -102,7 +142,7 @@ def start(m):
 # --- Обработка кнопок меню ---
 @bot.message_handler(func=lambda m: m.text == "➕ Добавить")
 def add_start(m):
-    msg = bot.send_message(m.chat.id, "Введите монеты через запятую (можно тикеры):\nНапример: <code>BTC, ETH, XRP, TON</code>", parse_mode='HTML')
+    msg = bot.send_message(m.chat.id, "Введите монеты через запятую:\nНапример: <code>BTC, XRP, TON</code>", parse_mode='HTML')
     bot.register_next_step_handler(msg, step_coins)
 
 @bot.message_handler(func=lambda m: m.text == "📋 Мои подписки")
@@ -144,7 +184,7 @@ def step_coins(m):
     coins = resolve_coins(m.text)
     
     if not coins:
-        bot.send_message(m.chat.id, "Не удалось найти указанные монеты. Попробуй полные названия или основные тикеры.", reply_markup=main_menu())
+        bot.send_message(m.chat.id, "Не удалось найти указанные монеты. Попробуй проверить написание.", reply_markup=main_menu())
         return
 
     user_states[m.chat.id] = {'coins': coins}
@@ -182,6 +222,7 @@ def step_time(m):
 
 # ================= ПЛАНИРОВЩИК (СВОДНЫЕ ОТЧЕТЫ) =================
 def background_worker():
+    print("Планировщик запущен")
     while True:
         try:
             now_time = datetime.now().strftime("%H:%M")
@@ -190,8 +231,6 @@ def background_worker():
             # Получаем все подписки
             all_alerts = db_query("SELECT * FROM alerts", fetch=True)
             
-            # Группируем задачи по пользователям, чтобы слать одним сообщением
-            # Структура: tasks[user_id] = [alert_row, alert_row...]
             tasks = {}
             
             for row in all_alerts:
@@ -241,7 +280,7 @@ def background_worker():
                                 f"{emoji} {change_pct:+.2f}%\n")
                         message_lines.append(line)
                         
-                        # Обновляем БД
+                        # Обновляем БД: ставим сегодняшнюю дату и новую цену
                         db_query("UPDATE alerts SET last_check_date=?, last_price=? WHERE id=?", 
                                  (today_date, new_price, aid))
                         has_updates = True
@@ -267,8 +306,5 @@ if __name__ == '__main__':
     t = threading.Thread(target=background_worker)
     t.start()
     
-    print("Бот запущен v2.0...")
-    bot.infinity_polling()
-    
-    print("Бот работает...")
+    print("Бот запущен v2.1 (Fix XRP)...")
     bot.infinity_polling()
