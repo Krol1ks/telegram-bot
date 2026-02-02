@@ -6,7 +6,9 @@ import threading
 from datetime import datetime
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = 'ВАШ_ТОКЕН_ЗДЕСЬ'
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN не установлен в переменных окружения")
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ================= БАЗА ДАННЫХ =================
