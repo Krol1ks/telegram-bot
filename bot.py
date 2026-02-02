@@ -1,15 +1,19 @@
-import telebot
-from telebot import types
-import sqlite3
-import requests
-import time
-import threading
-from datetime import datetime
 import os
+import threading
+import time
+
+from flask import Flask
+import telebot
+from telebot import apihelper
+import requests
+import sqlite3
+from datetime import datetime
+from telebot import types
 
 # ================= НАСТРОЙКИ =================
 # Вставь сюда свой токен прямо в кавычки, если не используешь переменные окружения
-BOT_TOKEN = 'ВАШ_ТОКЕН_ЗДЕСЬ'
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+app = Flask(__name__)
 
 # Если токена нет в коде, пробуем взять из системы (для продвинутых)
 if BOT_TOKEN == 'ВАШ_ТОКЕН_ЗДЕСЬ':
@@ -155,7 +159,7 @@ def list_alerts(m):
     text = "<b>Ваши подписки:</b>\n\n"
     for r in rows:
         text += f"🔹 <b>{r[0]}</b> | Раз в {r[1]} дн. в {r[2]} | База: ${r[3]}\n"
-    bot.send_message(m.chat.id, text, parse_mode='HTML', reply_markup=main_menu())
+    safe_send_message(m.chat.id, text, parse_mode='HTML', reply_markup=main_menu())
 
 @bot.message_handler(func=lambda m: m.text == "🗑 Удалить")
 def delete_menu(m):
@@ -288,7 +292,7 @@ def background_worker():
                 if has_updates:
                     full_msg = message_header + "\n".join(message_lines)
                     try:
-                        bot.send_message(uid, full_msg, parse_mode='HTML')
+                        safe_send_message(uid, full_msg, parse_mode='HTML')
                     except Exception as e:
                         print(f"Не удалось отправить пользователю {uid}: {e}")
 
@@ -297,14 +301,45 @@ def background_worker():
         except Exception as e:
             print(f"Ошибка цикла: {e}")
             time.sleep(60)
+# ====== Костыль: HTTP healthcheck ======
+@app.route("/")
+def index():
+    return "OK", 200
 
-# ================= ЗАПУСК =================
+@app.route("/health")
+def health():
+    return "OK", 200
+# ====== Обёртка polling с автоперезапуском и защитой от ConnectionError ======
+def safe_send_message(chat_id, text, **kwargs):
+    for attempt in range(3):
+        try:
+            return bot.send_message(chat_id, text, **kwargs)
+        except requests.exceptions.ConnectionError:
+            if attempt == 2:
+                raise
+            time.sleep(1)
+# ====== ЗАПУСК =================
 if __name__ == '__main__':
     init_db()
     
     # Запуск планировщика в фоне
-    t = threading.Thread(target=background_worker)
-    t.start()
-    
-    print("Бот запущен v2.1 (Fix XRP)...")
-    bot.infinity_polling()
+    t_bg = threading.Thread(target=background_worker, daemon=True)
+    t_bg.start()
+
+    # Запуск polling в отдельном потоке
+    def run_polling():
+        while True:
+            try:
+                bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            except requests.exceptions.ConnectionError:
+                time.sleep(5)
+            except Exception as e:
+                print(f"Ошибка polling: {e}")
+                time.sleep(5)
+
+    t_poll = threading.Thread(target=run_polling, daemon=True)
+    t_poll.start()
+
+    # HTTP-сервер для Render
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
